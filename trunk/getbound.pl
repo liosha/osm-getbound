@@ -1,5 +1,10 @@
 ﻿#!/usr/bin/perl -w
 
+# ABSTRACT: save osm boundary to .poly file
+
+# $Id$
+
+
 use 5.010;
 use strict;
 use warnings;
@@ -19,25 +24,20 @@ use YAML::Any qw/ Dump LoadFile /;
 
 ####    Settings
 
-my $api  = 'http://www.openstreetmap.org/api/0.6';
-my $proxy;
+my $api             = 'http://www.openstreetmap.org/api/0.6';
+my $alias_config    = 'aliases.yml';
+my $http_timeout    = 300;
 
-my $onering = 0;
-my $noinner = 0;
-my $alias_config = 'aliases.yml';
-
-my $filename;
-my $outfile;
 
 
 ####    Command-line
 
 GetOptions (
-    'file=s'    => \$filename,
-    'o=s'       => \$outfile,
-    'onering!'  => \$onering,
-    'noinner!'  => \$noinner,
-    'proxy=s'   => \$proxy,
+    'file=s'    => \my $filename,
+    'o=s'       => \my $outfile,
+    'onering!'  => \my $onering,
+    'noinner!'  => \my $noinner,
+    'proxy=s'   => \my $proxy,
     'aliases=s' => \$alias_config,
 );
 
@@ -289,7 +289,7 @@ sub _init_ua {
     my $ua = LWP::UserAgent->new();
     $ua->proxy( 'http', $proxy )    if $proxy;
     $ua->default_header('Accept-Encoding' => 'gzip');
-    $ua->timeout( 300 );
+    $ua->timeout( $http_timeout );
 
     return $ua;
 }
