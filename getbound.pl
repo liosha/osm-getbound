@@ -66,18 +66,7 @@ unless ( $rename ) {
 
 my @rel_ids = map { $rename->{$_} // $_ } @ARGV;
 
-# getting and parsing
-my $osm_ = OSM->new();
-if ( $filename ) {
-    $osm_->load( read_file $filename );
-}
-else {
-    download_relation($_)  for @rel_ids;
-}
-
-
-# connecting rings
-my %role = (
+my %valid_role = (
     ''          => 'outer',
     'outer'     => 'outer',
     'border'    => 'outer',
@@ -86,24 +75,36 @@ my %role = (
     'enclave'   => 'inner',
 );
 
+
+# getting and parsing
+my $osm = OSM->new();
+if ( $filename ) {
+    $osm->load( read_file $filename );
+}
+else {
+    download_relation($_)  for @rel_ids;
+}
+
+
+# connecting rings
+logg( "Creating polygons" );
 my %result;
 
-
 for my $rel_id ( @rel_ids ) {
-    my $relation = $osm_->{relations}->{$rel_id};
+    my $relation = $osm->{relations}->{$rel_id};
     my %ring;
 
     for my $member ( @{ $relation->{member} } ) {
         next unless $member->{type} eq 'way';
-        my $role = $role{ $member->{role} }  or next;
+        my $role = $valid_role{ $member->{role} }  or next;
     
         my $way_id = $member->{ref};
-        if ( !exists $osm_->{chains}->{$way_id} ) {
+        if ( !exists $osm->{chains}->{$way_id} ) {
             logg( "Incomplete data: way $way_id is missing" );
             next;
         }
 
-        push @{ $ring{$role} },  [ @{ $osm_->{chains}->{$way_id} } ];
+        push @{ $ring{$role} },  [ @{ $osm->{chains}->{$way_id} } ];
     }
 
     while ( my ( $type, $list_ref ) = each %ring ) {
@@ -156,6 +157,7 @@ unless ( exists $result{outer} ) {
 
 
 if ( $onering ) {
+    logg( "Merging rings" );
     my @ring = @{ shift @{$result{outer}} };
 
     for my $type ( 'outer', 'inner' ) {
@@ -165,7 +167,7 @@ if ( $onering ) {
         while ( scalar @{$result{$type}} ) {
 
             # find close[st] points
-            my @ring_center = centroid( map { $osm_->{nodes}->{$_} } @ring );
+            my @ring_center = centroid( map { $osm->{nodes}->{$_} } @ring );
             
             if ( $type eq 'inner' ) {
                 my ( $index_i, $dist ) = ( 0, metric( \@ring_center, $ring[0] ) );
@@ -174,16 +176,16 @@ if ( $onering ) {
                     next unless $tdist < $dist;
                     ( $index_i, $dist ) = ( $i, $tdist );
                 }
-                @ring_center = @{ $osm_->{nodes}->{ $ring[$index_i] } };
+                @ring_center = @{ $osm->{nodes}->{ $ring[$index_i] } };
             }
 
             $result{$type} = [ sort { 
-                    metric( \@ring_center, [centroid( map { $osm_->{nodes}->{$_} } @$a )] ) <=>
-                    metric( \@ring_center, [centroid( map { $osm_->{nodes}->{$_} } @$b )] )
+                    metric( \@ring_center, [centroid( map { $osm->{nodes}->{$_} } @$a )] ) <=>
+                    metric( \@ring_center, [centroid( map { $osm->{nodes}->{$_} } @$b )] )
                 } @{$result{$type}} ];
 
             my @add = @{ shift @{$result{$type}} };
-            my @add_center = centroid( map { $osm_->{nodes}->{$_} } @add );
+            my @add_center = centroid( map { $osm->{nodes}->{$_} } @add );
 
             my ( $index_r, $dist ) = ( 0, metric( \@add_center, $ring[0] ) );
             for my $i ( 1 .. $#ring ) {
@@ -211,6 +213,7 @@ if ( $onering ) {
 
 
 ##  Output
+logg( "Writing" );
 
 my $out = $outfile && $outfile ne q{-}
     ? do { open my $fh, '>', $outfile; $fh }
@@ -226,7 +229,7 @@ for my $type ( 'outer', 'inner' ) {
     for my $ring ( sort { scalar @$b <=> scalar @$a } @{$result{$type}} ) {
         print {$out} ( $type eq 'inner' ? q{-} : q{}) . $num++ . "\n";
         for my $point ( @$ring ) {
-            printf {$out} "   %-11s  %-11s\n", @{ $osm_->{nodes}->{$point} };
+            printf {$out} "   %-11s  %-11s\n", @{ $osm->{nodes}->{$point} };
         }
         print {$out} "END\n\n";
     }
@@ -235,6 +238,7 @@ for my $type ( 'outer', 'inner' ) {
 print {$out} "END\n";
 close $out;
 
+logg( "All ok" );
 exit;
 
 
@@ -243,10 +247,10 @@ exit;
 sub metric {
     my ( $x1, $y1 ) = ref $_[0]
         ? @{ shift @_ }
-        : @{ $osm_->{nodes}->{ shift @_ } };
+        : @{ $osm->{nodes}->{ shift @_ } };
     my ( $x2, $y2 ) = ref $_[0]
         ? @{ shift @_ }
-        : @{ $osm_->{nodes}->{ shift @_ } };
+        : @{ $osm->{nodes}->{ shift @_ } };
 
     return (($x2-$x1)*cos( ($y2+$y1)/2/180*3.14159 ))**2 + ($y2-$y1)**2;
 }
@@ -304,7 +308,7 @@ sub http_get {
 
     my $res;
     for my $attempt ( 1 .. $opt{retry} || 1 ) {
-        logg "Attempt $attempt";
+        logg ". attempt $attempt";
         $res = $ua->request($req);
         last if $res->is_success;
     }
@@ -313,8 +317,6 @@ sub http_get {
         logg 'Failed';
         return undef;
     }
-
-    logg 'Ok';
 
     gunzip \($res->content) => \my $data;
     return $data;
@@ -326,14 +328,30 @@ sub download_relation {
 
     logg "Downloading RelID=$rel_id";
 
-    my $url = "$api/relation/$rel_id/full";
-    my $data = http_get( $url, retry => 3 );
+    my $data = http_get( "$api/relation/$rel_id/full", retry => 2 );
 
     if ( $data ) {
-        $osm_->load( $data );
+        $osm->load( $data );
     }
     else {
-        exit 1;
+        logg "Unable to get full relation, trying by parts";
+        my $rel_data = http_get( "$api/relation/$rel_id", retry => 3 );
+        exit 1  if !$rel_data;
+
+        $osm->load( $rel_data );
+        my $relation = $osm->{relations}->{$rel_id};
+        my @ways_to_load =
+            grep { !exists $osm->{chains}->{$_} }
+            map { $_->{ref} }
+            grep { $_->{type} ~~ 'way' && $valid_role{$_->{role}} }
+            @{ $relation->{member} };
+
+        logg sprintf "%d ways to load", scalar @ways_to_load;
+        for my $way_id ( @ways_to_load ) {
+            my $way_data = http_get( "$api/way/$way_id/full", retry => 3 );
+            exit 1  if !$way_data;
+            $osm->load( $way_data );
+        }
     }
 
     return;
