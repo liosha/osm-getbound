@@ -1,4 +1,4 @@
-﻿#!/usr/bin/perl -w
+#!/usr/bin/perl
 
 # ABSTRACT: save osm boundary to .poly file
 
@@ -9,6 +9,7 @@ use 5.010;
 use strict;
 use warnings;
 use utf8;
+use autodie;
 
 use Carp;
 
@@ -167,37 +168,37 @@ if ( $onering ) {
         while ( scalar @{$result{$type}} ) {
 
             # find close[st] points
-            my @ring_center = centroid( map { $osm->{nodes}->{$_} } @ring );
+            my @ring_center = centroid( \@ring );
             
             if ( $type eq 'inner' ) {
                 my ( $index_i, $dist ) = ( 0, metric( \@ring_center, $ring[0] ) );
                 for my $i ( 1 .. $#ring ) {
                     my $tdist = metric( \@ring_center, $ring[$i] );
-                    next unless $tdist < $dist;
+                    next if $tdist >= $dist;
                     ( $index_i, $dist ) = ( $i, $tdist );
                 }
                 @ring_center = @{ $osm->{nodes}->{ $ring[$index_i] } };
             }
 
             $result{$type} = [ sort { 
-                    metric( \@ring_center, [centroid( map { $osm->{nodes}->{$_} } @$a )] ) <=>
-                    metric( \@ring_center, [centroid( map { $osm->{nodes}->{$_} } @$b )] )
+                    metric( \@ring_center, [centroid( $a )] ) <=>
+                    metric( \@ring_center, [centroid( $b )] )
                 } @{$result{$type}} ];
 
             my @add = @{ shift @{$result{$type}} };
-            my @add_center = centroid( map { $osm->{nodes}->{$_} } @add );
+            my @add_center = centroid( \@add );
 
             my ( $index_r, $dist ) = ( 0, metric( \@add_center, $ring[0] ) );
             for my $i ( 1 .. $#ring ) {
                 my $tdist = metric( \@add_center, $ring[$i] );
-                next unless $tdist < $dist;
+                next if $tdist >= $dist;
                 ( $index_r, $dist ) = ( $i, $tdist );
             }
         
             ( my $index_a, $dist ) = ( 0, metric( $ring[$index_r], $add[0] ) );
             for my $i ( 1 .. $#add ) {
                 my $tdist = metric( $ring[$index_r], $add[$i] );
-                next unless $tdist < $dist;
+                next if $tdist >= $dist;
                 ( $index_a, $dist ) = ( $i, $tdist );
             }
 
@@ -245,28 +246,27 @@ exit;
 
 
 sub metric {
-    my ( $x1, $y1 ) = ref $_[0]
-        ? @{ shift @_ }
-        : @{ $osm->{nodes}->{ shift @_ } };
-    my ( $x2, $y2 ) = ref $_[0]
-        ? @{ shift @_ }
-        : @{ $osm->{nodes}->{ shift @_ } };
+    my ($p1, $p2) = @_;
 
+    my ($x1, $y1, $x2, $y2) = map {@$_} map { ref $_ ? $_ : $osm->{nodes}->{$_} } ($p1, $p2);
     return (($x2-$x1)*cos( ($y2+$y1)/2/180*3.14159 ))**2 + ($y2-$y1)**2;
 }
 
 sub centroid {
+    my ($id_chain) = @_;
+    my @chain = map { $osm->{nodes}->{$_} } @$id_chain;
+    my $p0 = $chain[0];
 
     my $slat = 0;
     my $slon = 0;
     my $ssq  = 0;
 
-    for my $i ( 1 .. $#_-1 ) {
-        my $tlon = ( $_[0]->[0] + $_[$i]->[0] + $_[$i+1]->[0] ) / 3;
-        my $tlat = ( $_[0]->[1] + $_[$i]->[1] + $_[$i+1]->[1] ) / 3;
+    for my $i ( 1 .. $#chain-1 ) {
+        my $tlon = ( $p0->[0] + $chain[$i]->[0] + $chain[$i+1]->[0] ) / 3;
+        my $tlat = ( $p0->[1] + $chain[$i]->[1] + $chain[$i+1]->[1] ) / 3;
 
-        my $tsq = ( ( $_[$i]  ->[0] - $_[0]->[0] ) * ( $_[$i+1]->[1] - $_[0]->[1] ) 
-                  - ( $_[$i+1]->[0] - $_[0]->[0] ) * ( $_[$i]  ->[1] - $_[0]->[1] ) );
+        my $tsq = ( ( $chain[$i]  ->[0] - $p0->[0] ) * ( $chain[$i+1]->[1] - $p0->[1] ) 
+                  - ( $chain[$i+1]->[0] - $p0->[0] ) * ( $chain[$i]  ->[1] - $p0->[1] ) );
         
         $slat += $tlat * $tsq;
         $slon += $tlon * $tsq;
@@ -274,9 +274,9 @@ sub centroid {
     }
 
     if ( $ssq == 0 ) {
-        return ( 
-            ((min map { $_->[0] } @_) + (max map { $_->[0] } @_)) / 2,
-            ((min map { $_->[1] } @_) + (max map { $_->[1] } @_)) / 2 );
+        return (
+            ((min map { $_->[0] } @chain) + (max map { $_->[0] } @chain)) / 2,
+            ((min map { $_->[1] } @chain) + (max map { $_->[1] } @chain)) / 2 );
     }
     return ( $slon/$ssq , $slat/$ssq );
 }
@@ -284,6 +284,7 @@ sub centroid {
 
 sub logg {
     say STDERR @_;
+    return;
 }
 
 
@@ -303,19 +304,19 @@ sub http_get {
     my ($url, %opt) = @_;
     state $ua = _init_ua();
     
-    logg $url;
+    logg ". $url";
     my $req = HTTP::Request->new( GET => $url );
 
     my $res;
     for my $attempt ( 1 .. $opt{retry} || 1 ) {
-        logg ". attempt $attempt";
+        # logg ". attempt $attempt";
         $res = $ua->request($req);
         last if $res->is_success;
     }
 
     if ( !$res->is_success ) {
         logg 'Failed';
-        return undef;
+        return;
     }
 
     gunzip \($res->content) => \my $data;
@@ -398,4 +399,5 @@ sub load {
     close $fh;
     return;
 }
+
 
