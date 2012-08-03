@@ -49,7 +49,7 @@ unless ( @ARGV ) {
     print "     -o <file>       - output filename (default: STDOUT)\n";
     print "     -proxy <host>   - use proxy\n";
     print "     -onering        - merge rings\n\n";
-    exit;
+    exit 1;
 }
 
 
@@ -143,14 +143,14 @@ for my $rel_id ( @rel_ids ) {
             }
             logg( "Invalid data: ring is not closed" );
             logg( "Non-connecting chain:\n" . Dumper( \@chain ) );
-            exit;
+            exit 1;
         }
     }
 }
 
 unless ( exists $result{outer} ) {
     logg( "Invalid data: no outer rings" );
-    exit;
+    exit 1;
 }
 
 
