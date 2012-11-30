@@ -29,6 +29,12 @@ my $api             = 'http://www.openstreetmap.org/api/0.6';
 my $alias_config    = 'aliases.yml';
 my $http_timeout    = 300;
 
+my $save_mode = 'poly';
+my %save_sub = (
+    poly => \&_save_poly,
+    shp  => \&_save_shp,
+);
+
 
 
 ####    Command-line
@@ -40,6 +46,7 @@ GetOptions (
     'noinner!'  => \my $noinner,
     'proxy=s'   => \my $proxy,
     'aliases=s' => \$alias_config,
+    'om=s'      => \$save_mode,
 );
 
 unless ( @ARGV ) {
@@ -216,31 +223,61 @@ if ( $onering ) {
 ##  Output
 logg( "Writing" );
 
-my $out = $outfile && $outfile ne q{-}
-    ? do { open my $fh, '>', $outfile; $fh }
-    : *STDOUT;
-
-my $rel = join q{+}, @rel_ids;
-print {$out} "Relation $rel\n\n";
-
-my $num = 1;
-for my $type ( 'outer', 'inner' ) {
-    next unless exists $result{$type};
-
-    for my $ring ( sort { scalar @$b <=> scalar @$a } @{$result{$type}} ) {
-        print {$out} ( $type eq 'inner' ? q{-} : q{}) . $num++ . "\n";
-        for my $point ( @$ring ) {
-            printf {$out} "   %-11s  %-11s\n", @{ $osm->{nodes}->{$point} };
-        }
-        print {$out} "END\n\n";
-    }
-}
-
-print {$out} "END\n";
-close $out;
+$save_sub{$save_mode}->();
 
 logg( "All ok" );
 exit;
+
+
+sub _save_poly {
+    my $out = $outfile && $outfile ne q{-}
+        ? do { open my $fh, '>', $outfile; $fh }
+        : *STDOUT;
+
+    my $rel = join q{+}, @rel_ids;
+    print {$out} "Relation $rel\n\n";
+
+    my $num = 1;
+    for my $type ( 'outer', 'inner' ) {
+        next unless exists $result{$type};
+
+        for my $ring ( sort { scalar @$b <=> scalar @$a } @{$result{$type}} ) {
+            print {$out} ( $type eq 'inner' ? q{-} : q{}) . $num++ . "\n";
+            for my $point ( @$ring ) {
+                printf {$out} "   %-11s  %-11s\n", @{ $osm->{nodes}->{$point} };
+            }
+            print {$out} "END\n\n";
+        }
+    }
+
+    print {$out} "END\n";
+    close $out;
+
+    return;
+}
+
+
+sub _save_shp {
+    require Geo::Shapefile::Writer;
+
+    my $name = $outfile || join( q{-}, @ARGV );
+    my $shp = Geo::Shapefile::Writer->new( $name, 'POLYGON', qw/ NAME GRMN_TYPE / );
+
+    # !!! rearrange contours
+    my @contours;
+    for my $type ( 'outer', 'inner' ) {
+        next unless exists $result{$type};
+
+        for my $ring ( sort { scalar @$b <=> scalar @$a } @{$result{$type}} ) {
+            push @contours, [ map {$osm->{nodes}->{$_}} @$ring ];
+        }
+    }
+
+    $shp->add_shape( \@contours, { GRMN_TYPE => 'DATA_BOUNDS' } );
+    $shp->finalize();
+
+    return;
+}
 
 
 
