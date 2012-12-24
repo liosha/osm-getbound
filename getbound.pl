@@ -151,7 +151,7 @@ for my $rel_id ( @rel_ids ) {
             logg( "Invalid data: ring is not closed" );
 
             require Data::Dumper;
-            logg( "Non-connecting chain:\n" . Dumper( \@chain ) );
+            logg( "Non-connecting chain:\n" . Data::Dumper::Dumper( \@chain ) );
             exit 1;
         }
     }
