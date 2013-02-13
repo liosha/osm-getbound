@@ -98,7 +98,7 @@ else {
 }
 
 
-# connecting rings
+# connecting rings: outers are counterclockwise!
 logg( "Creating polygons" );
 
 my %contours;
@@ -274,7 +274,8 @@ sub _save_shp {
     my @contours;
     for my $type ( 'outer', 'inner' ) {
         next if !$contours{$type};
-        push @contours, sort { scalar @$b <=> scalar @$a } @{$contours{$type}};
+        # changing order: outers are clockwise
+        push @contours, map {[reverse @$_]} sort { $#$b <=> $#$a } @{$contours{$type}};
     }
 
     $shp->add_shape( \@contours, { GRMN_TYPE => 'DATA_BOUNDS' } );
