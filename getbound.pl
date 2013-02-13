@@ -16,7 +16,7 @@ use Carp;
 use LWP::UserAgent;
 use Getopt::Long;
 use List::Util qw{ min max sum };
-use List::MoreUtils qw{ first_index };
+use List::MoreUtils qw{ first_index none };
 use IO::Uncompress::Gunzip qw{ gunzip $GunzipError };
 use File::Slurp;
 
@@ -50,6 +50,7 @@ GetOptions (
     'proxy=s'   => \my $proxy,
     'aliases=s' => \$alias_config,
     'om=s'      => \$save_mode,
+    'offset|buffer=f' => \my $offset,
 );
 
 unless ( @ARGV ) {
@@ -101,7 +102,9 @@ else {
 # connecting rings: outers are counterclockwise!
 logg( "Creating polygons" );
 
-my %contours;
+# contours are arrays [ \@chain, $is_inner ]
+my @contours;
+
 for my $rel_id ( @rel_ids ) {
     my $relation = $osm->{relations}->{$rel_id};
     my %ring;
@@ -127,7 +130,10 @@ for my $rel_id ( @rel_ids ) {
                 my @contour = map { $osm->{nodes}->{$_} } @chain;
                 my $order = 0 + Math::Polygon::Calc::polygon_is_clockwise(@contour);
                 state $desired_order = { outer => 0, inner => 1 };
-                push @{$contours{$type}}, $order == $desired_order->{$type} ? \@contour : [reverse @contour];
+                push @contours, [
+                    $order == $desired_order->{$type} ? \@contour : [reverse @contour],
+                    $type ~~ 'inner',
+                ];
                 next;
             }
 
@@ -164,63 +170,73 @@ for my $rel_id ( @rel_ids ) {
 }
 
 
-if ( !exists $contours{outer} ) {
+if ( !@contours || none { !$_->[1] } @contours ) {
     logg( "Invalid data: no outer rings" );
     exit 1;
 }
 
 
+# outers first
+# todo: second sort by area
+@contours = sort { $a->[1] <=> $b->[1] || $#{$b->[0]} <=> $#{$a->[0]} } @contours;
+
+
+
 ##  Merge rings
 if ( $onering ) {
     logg( "Merging rings" );
-    my @ring = @{ shift @{$contours{outer}} };
 
-    for my $type ( 'outer', 'inner' ) {
-        next unless exists $contours{$type};
-        next if $noinner && $type eq 'inner';
+    my $first_item = shift @contours;
+    my @ring = @{ $first_item->[0] };
 
-        while ( @{$contours{$type}} ) {
-            # find close[st] points
-            my $ring_center = polygon_centroid( \@ring );
-            
-            if ( $type eq 'inner' ) {
-                my ( $index_i, $dist ) = ( 0, metric( $ring_center, $ring[0] ) );
-                for my $i ( 1 .. $#ring ) {
-                    my $tdist = metric( $ring_center, $ring[$i] );
-                    next if $tdist >= $dist;
-                    ( $index_i, $dist ) = ( $i, $tdist );
-                }
-                $ring_center = $ring[$index_i];
-            }
+    while ( @contours ) {
+        my ($add_contour, $is_inner) = @{ shift @contours };
+        next if $noinner && $is_inner;
 
-            $contours{$type} = [ sort { 
-                    metric( $ring_center, polygon_centroid($a) ) <=>
-                    metric( $ring_center, polygon_centroid($b) )
-                } @{$contours{$type}} ];
+        # find close[st] points
+        my $ring_center = polygon_centroid( \@ring );
 
-            my @add = @{ shift @{$contours{$type}} };
-            my $add_center = polygon_centroid( \@add );
-
-            my ( $index_r, $dist ) = ( 0, metric( $add_center, $ring[0] ) );
+        if ( $is_inner ) {
+            my ( $index_i, $dist ) = ( 0, metric( $ring_center, $ring[0] ) );
             for my $i ( 1 .. $#ring ) {
-                my $tdist = metric( $add_center, $ring[$i] );
+                my $tdist = metric( $ring_center, $ring[$i] );
                 next if $tdist >= $dist;
-                ( $index_r, $dist ) = ( $i, $tdist );
+                ( $index_i, $dist ) = ( $i, $tdist );
             }
-        
-            ( my $index_a, $dist ) = ( 0, metric( $ring[$index_r], $add[0] ) );
-            for my $i ( 1 .. $#add ) {
-                my $tdist = metric( $ring[$index_r], $add[$i] );
-                next if $tdist >= $dist;
-                ( $index_a, $dist ) = ( $i, $tdist );
-            }
-
-            # merge
-            splice @ring, $index_r, 0, ( $ring[$index_r], @add[ $index_a .. $#add-1 ], @add[ 0 .. $index_a-1 ], $add[$index_a] );
+            $ring_center = $ring[$index_i];
         }
+
+        @contours = sort { 
+                    metric( $ring_center, polygon_centroid($a->[0]) ) <=>
+                    metric( $ring_center, polygon_centroid($b->[0]) )
+                } @contours;
+
+        my $add_center = polygon_centroid( $add_contour );
+
+        my ( $index_r, $dist ) = ( 0, metric( $add_center, $ring[0] ) );
+        for my $i ( 1 .. $#ring ) {
+            my $tdist = metric( $add_center, $ring[$i] );
+            next if $tdist >= $dist;
+            ( $index_r, $dist ) = ( $i, $tdist );
+        }
+
+        ( my $index_a, $dist ) = ( 0, metric( $ring[$index_r], $add_contour->[0] ) );
+        for my $i ( 1 .. $#$add_contour ) {
+            my $tdist = metric( $ring[$index_r], $add_contour->[$i] );
+            next if $tdist >= $dist;
+            ( $index_a, $dist ) = ( $i, $tdist );
+        }
+
+        # merge
+        splice @ring, $index_r, 0, (
+            $ring[$index_r],
+            @$add_contour[ $index_a .. $#$add_contour-1 ],
+            @$add_contour[ 0 .. $index_a-1 ],
+            $add_contour->[$index_a],
+        );
     }
 
-    %contours = ( outer => [ \@ring ] );
+    @contours = ( [ \@ring, 0 ] );
 }
 
 
@@ -244,17 +260,15 @@ sub _save_poly {
     print {$out} "Relation $rel\n\n";
 
     my $num = 1;
-    for my $type ( 'outer', 'inner' ) {
-        next if !$contours{$type};
 
-        # todo: sort by area
-        for my $ring ( sort { scalar @$b <=> scalar @$a } @{$contours{$type}} ) {
-            print {$out} ( $type eq 'inner' ? q{-} : q{}) . $num++ . "\n";
-            for my $point ( @$ring ) {
-                printf {$out} "   %-11s  %-11s\n", @$point;
-            }
-            print {$out} "END\n\n";
+    for my $item ( @contours ) {
+        my ($ring, $is_inner) = @$item;
+        
+        print {$out} ( $is_inner ? q{-} : q{}) . $num++ . "\n";
+        for my $point ( @$ring ) {
+            printf {$out} "   %-11s  %-11s\n", @$point;
         }
+        print {$out} "END\n\n";
     }
 
     print {$out} "END\n";
@@ -271,14 +285,12 @@ sub _save_shp {
     my $shp = Geo::Shapefile::Writer->new( $name, 'POLYGON', qw/ NAME GRMN_TYPE / );
 
     # !!! todo: rearrange contours
-    my @contours;
-    for my $type ( 'outer', 'inner' ) {
-        next if !$contours{$type};
-        # changing order: outers are clockwise
-        push @contours, map {[reverse @$_]} sort { $#$b <=> $#$a } @{$contours{$type}};
-    }
+    my @shp_contours =
+        map {[ reverse @{$_->[0]} ]}
+#        grep { !$_->[1] }  # skip inners?
+        @contours;
 
-    $shp->add_shape( \@contours, { GRMN_TYPE => 'DATA_BOUNDS' } );
+    $shp->add_shape( \@shp_contours, { GRMN_TYPE => 'DATA_BOUNDS' } );
     $shp->finalize();
 
     return;
