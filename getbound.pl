@@ -181,6 +181,20 @@ if ( !@contours || none { !$_->[1] } @contours ) {
 @contours = sort { $a->[1] <=> $b->[1] || $#{$b->[0]} <=> $#{$a->[0]} } @contours;
 
 
+##  Offset
+if ( defined $offset ) {
+    require Math::Clipper;
+
+    my $ofs_contours = Math::Clipper::offset( [ map { $_->[0] } @contours ], $offset, 1000/$offset );
+
+    @contours =
+        sort { $a->[1] <=> $b->[1] || $#{$b->[0]} <=> $#{$a->[0]} }
+        map {[ $_, Math::Polygon::Calc::polygon_is_clockwise(@$_) ]}
+        map {[@$_, $_->[0]]}
+        @$ofs_contours;
+}
+
+
 
 ##  Merge rings
 if ( $onering ) {
