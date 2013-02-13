@@ -22,6 +22,9 @@ use File::Slurp;
 
 use YAML::Any qw/ Dump LoadFile /;
 
+use Math::Polygon;
+use Math::Polygon::Tree qw/ :all /;
+
 
 ####    Settings
 
@@ -96,8 +99,8 @@ else {
 
 # connecting rings
 logg( "Creating polygons" );
-my %result;
 
+my %contours;
 for my $rel_id ( @rel_ids ) {
     my $relation = $osm->{relations}->{$rel_id};
     my %ring;
@@ -120,7 +123,10 @@ for my $rel_id ( @rel_ids ) {
             my @chain = @{ shift @$list_ref };
         
             if ( $chain[0] eq $chain[-1] ) {
-                push @{$result{$type}}, [@chain];
+                my @contour = map { $osm->{nodes}->{$_} } @chain;
+                my $order = 0 + Math::Polygon::Calc::polygon_clockwise(@contour);
+                state $desired_order = { outer => 0, inner => 1 };
+                push @{$contours{$type}}, $order == $desired_order->{$type} ? \@contour : [reverse @contour];
                 next;
             }
 
@@ -150,56 +156,53 @@ for my $rel_id ( @rel_ids ) {
             }
             logg( "Invalid data: ring is not closed" );
 
-            require Data::Dumper;
-            logg( "Non-connecting chain:\n" . Data::Dumper::Dumper( \@chain ) );
+            logg( "Non-connecting chain:\n" . Dump( \@chain ) );
             exit 1;
         }
     }
 }
 
-unless ( exists $result{outer} ) {
+
+if ( !exists $contours{outer} ) {
     logg( "Invalid data: no outer rings" );
     exit 1;
 }
 
 
 ##  Merge rings
-
-
 if ( $onering ) {
     logg( "Merging rings" );
-    my @ring = @{ shift @{$result{outer}} };
+    my @ring = @{ shift @{$contours{outer}} };
 
     for my $type ( 'outer', 'inner' ) {
-        next unless exists $result{$type};
+        next unless exists $contours{$type};
         next if $noinner && $type eq 'inner';
 
-        while ( scalar @{$result{$type}} ) {
-
+        while ( @{$contours{$type}} ) {
             # find close[st] points
-            my @ring_center = centroid( \@ring );
+            my $ring_center = polygon_centroid( \@ring );
             
             if ( $type eq 'inner' ) {
-                my ( $index_i, $dist ) = ( 0, metric( \@ring_center, $ring[0] ) );
+                my ( $index_i, $dist ) = ( 0, metric( $ring_center, $ring[0] ) );
                 for my $i ( 1 .. $#ring ) {
-                    my $tdist = metric( \@ring_center, $ring[$i] );
+                    my $tdist = metric( $ring_center, $ring[$i] );
                     next if $tdist >= $dist;
                     ( $index_i, $dist ) = ( $i, $tdist );
                 }
-                @ring_center = @{ $osm->{nodes}->{ $ring[$index_i] } };
+                $ring_center = $ring[$index_i];
             }
 
-            $result{$type} = [ sort { 
-                    metric( \@ring_center, [centroid( $a )] ) <=>
-                    metric( \@ring_center, [centroid( $b )] )
-                } @{$result{$type}} ];
+            $contours{$type} = [ sort { 
+                    metric( $ring_center, [polygon_centroid( $a )] ) <=>
+                    metric( $ring_center, [polygon_centroid( $b )] )
+                } @{$contours{$type}} ];
 
-            my @add = @{ shift @{$result{$type}} };
-            my @add_center = centroid( \@add );
+            my @add = @{ shift @{$contours{$type}} };
+            my $add_center = polygon_centroid( \@add );
 
-            my ( $index_r, $dist ) = ( 0, metric( \@add_center, $ring[0] ) );
+            my ( $index_r, $dist ) = ( 0, metric( $add_center, $ring[0] ) );
             for my $i ( 1 .. $#ring ) {
-                my $tdist = metric( \@add_center, $ring[$i] );
+                my $tdist = metric( $add_center, $ring[$i] );
                 next if $tdist >= $dist;
                 ( $index_r, $dist ) = ( $i, $tdist );
             }
@@ -216,7 +219,7 @@ if ( $onering ) {
         }
     }
 
-    $result{outer} = [ \@ring ];
+    %contours = ( outer => [ \@ring ] );
 }
 
 
@@ -241,12 +244,13 @@ sub _save_poly {
 
     my $num = 1;
     for my $type ( 'outer', 'inner' ) {
-        next unless exists $result{$type};
+        next if !$contours{$type};
 
-        for my $ring ( sort { scalar @$b <=> scalar @$a } @{$result{$type}} ) {
+        # todo: sort by area
+        for my $ring ( sort { scalar @$b <=> scalar @$a } @{$contours{$type}} ) {
             print {$out} ( $type eq 'inner' ? q{-} : q{}) . $num++ . "\n";
             for my $point ( @$ring ) {
-                printf {$out} "   %-11s  %-11s\n", @{ $osm->{nodes}->{$point} };
+                printf {$out} "   %-11s  %-11s\n", @$point;
             }
             print {$out} "END\n\n";
         }
@@ -265,14 +269,11 @@ sub _save_shp {
     my $name = $outfile || join( q{-}, @ARGV );
     my $shp = Geo::Shapefile::Writer->new( $name, 'POLYGON', qw/ NAME GRMN_TYPE / );
 
-    # !!! rearrange contours
+    # !!! todo: rearrange contours
     my @contours;
     for my $type ( 'outer', 'inner' ) {
-        next unless exists $result{$type};
-
-        for my $ring ( sort { scalar @$b <=> scalar @$a } @{$result{$type}} ) {
-            push @contours, [ map {$osm->{nodes}->{$_}} @$ring ];
-        }
+        next if !$contours{$type};
+        push @contours, sort { scalar @$b <=> scalar @$a } @{$contours{$type}};
     }
 
     $shp->add_shape( \@contours, { GRMN_TYPE => 'DATA_BOUNDS' } );
@@ -289,35 +290,6 @@ sub metric {
 
     my ($x1, $y1, $x2, $y2) = map {@$_} map { ref $_ ? $_ : $osm->{nodes}->{$_} } ($p1, $p2);
     return (($x2-$x1)*cos( ($y2+$y1)/2/180*3.14159 ))**2 + ($y2-$y1)**2;
-}
-
-sub centroid {
-    my ($id_chain) = @_;
-    my @chain = map { $osm->{nodes}->{$_} } @$id_chain;
-    my $p0 = $chain[0];
-
-    my $slat = 0;
-    my $slon = 0;
-    my $ssq  = 0;
-
-    for my $i ( 1 .. $#chain-1 ) {
-        my $tlon = ( $p0->[0] + $chain[$i]->[0] + $chain[$i+1]->[0] ) / 3;
-        my $tlat = ( $p0->[1] + $chain[$i]->[1] + $chain[$i+1]->[1] ) / 3;
-
-        my $tsq = ( ( $chain[$i]  ->[0] - $p0->[0] ) * ( $chain[$i+1]->[1] - $p0->[1] ) 
-                  - ( $chain[$i+1]->[0] - $p0->[0] ) * ( $chain[$i]  ->[1] - $p0->[1] ) );
-        
-        $slat += $tlat * $tsq;
-        $slon += $tlon * $tsq;
-        $ssq  += $tsq;
-    }
-
-    if ( $ssq == 0 ) {
-        return (
-            ((min map { $_->[0] } @chain) + (max map { $_->[0] } @chain)) / 2,
-            ((min map { $_->[1] } @chain) + (max map { $_->[1] } @chain)) / 2 );
-    }
-    return ( $slon/$ssq , $slat/$ssq );
 }
 
 
