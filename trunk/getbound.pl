@@ -90,7 +90,8 @@ my %valid_role = (
 # getting and parsing
 my $osm = OSM->new();
 if ( $filename ) {
-    $osm->load( read_file $filename );
+    my $xml = read_file $filename;
+    $osm->load( $xml );
 }
 else {
     download_relation($_)  for @rel_ids;
@@ -124,7 +125,7 @@ for my $rel_id ( @rel_ids ) {
         
             if ( $chain[0] eq $chain[-1] ) {
                 my @contour = map { $osm->{nodes}->{$_} } @chain;
-                my $order = 0 + Math::Polygon::Calc::polygon_clockwise(@contour);
+                my $order = 0 + Math::Polygon::Calc::polygon_is_clockwise(@contour);
                 state $desired_order = { outer => 0, inner => 1 };
                 push @{$contours{$type}}, $order == $desired_order->{$type} ? \@contour : [reverse @contour];
                 next;
@@ -193,8 +194,8 @@ if ( $onering ) {
             }
 
             $contours{$type} = [ sort { 
-                    metric( $ring_center, [polygon_centroid( $a )] ) <=>
-                    metric( $ring_center, [polygon_centroid( $b )] )
+                    metric( $ring_center, polygon_centroid($a) ) <=>
+                    metric( $ring_center, polygon_centroid($b) )
                 } @{$contours{$type}} ];
 
             my @add = @{ shift @{$contours{$type}} };
@@ -289,6 +290,7 @@ sub metric {
     my ($p1, $p2) = @_;
 
     my ($x1, $y1, $x2, $y2) = map {@$_} map { ref $_ ? $_ : $osm->{nodes}->{$_} } ($p1, $p2);
+    confess Dump \@_ if !defined $y2;
     return (($x2-$x1)*cos( ($y2+$y1)/2/180*3.14159 ))**2 + ($y2-$y1)**2;
 }
 
