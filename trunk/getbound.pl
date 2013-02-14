@@ -13,6 +13,8 @@ use autodie;
 
 use Carp;
 
+use FindBin qw{ $Bin };
+
 use LWP::UserAgent;
 use Getopt::Long;
 use List::Util qw{ min max sum };
@@ -29,7 +31,7 @@ use Math::Polygon::Tree qw/ :all /;
 ####    Settings
 
 my $api             = 'http://www.openstreetmap.org/api/0.6';
-my $alias_config    = 'aliases.yml';
+my $alias_config    = "$Bin/aliases.yml";
 my $http_timeout    = 300;
 
 my $save_mode = 'poly';
