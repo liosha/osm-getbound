@@ -30,9 +30,10 @@ use Math::Polygon::Tree qw/ :all /;
 
 ####    Settings
 
-our $api = 'osm';
+our $api = $ENV{GETBOUND_API} || 'osm';
 our %API = (
-    osm => [ osm => 'http://www.openstreetmap.org/api/0.6' ],
+    osm     => [ osm => 'http://www.openstreetmap.org/api/0.6' ],
+    op_ru   => [ overpass => 'http://overpass.osm.rambler.ru/cgi' ],
 );
 
 my $alias_config    = "$Bin/aliases.yml";
@@ -49,7 +50,7 @@ my %save_sub = (
 ####    Command-line
 
 GetOptions (
-    'api=s'     => \$api,
+    'api=s'     => sub { $api = $_[1]; $api =~ s/-/_/g; },
     'file=s'    => \my $filename,
     'o=s'       => \my $outfile,
     'onering!'  => \my $onering,
@@ -64,7 +65,7 @@ if ( !@ARGV || !$API{$api} ) {
     print "Usage:  getbound.pl [options] <relation> [<relation> ...]\n\n";
     print "relation - id or alias\n\n";
     print "Available options:\n";
-    print "     -api <api>      - api to use (@{\( sort keys %API )})\n";
+    print "     -api <api>      - api to use (@{[ sort keys %API ]})\n";
     print "     -o <file>       - output filename (default: STDOUT)\n";
     print "     -proxy <host>   - use proxy\n";
     print "     -onering        - merge rings\n\n";
@@ -415,6 +416,12 @@ sub _get_url {
         my $url = "$api_url/$obj/$id";
         $url .= '/full'  if $is_full;
         return $url;
+    }
+
+    if ( $api_type ~~ 'overpass' ) {
+        my $query = "data=$obj($id);";
+        $query .= '(._;>);'  if $is_full;
+        return "$api_url/interpreter?${query}out meta;";
     }
 
     croak "Unknown api type: $api_type";
