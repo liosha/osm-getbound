@@ -30,7 +30,11 @@ use Math::Polygon::Tree qw/ :all /;
 
 ####    Settings
 
-my $api             = 'http://www.openstreetmap.org/api/0.6';
+our $api = 'osm';
+our %API = (
+    osm => [ osm => 'http://www.openstreetmap.org/api/0.6' ],
+);
+
 my $alias_config    = "$Bin/aliases.yml";
 my $http_timeout    = 300;
 
@@ -45,6 +49,7 @@ my %save_sub = (
 ####    Command-line
 
 GetOptions (
+    'api=s'     => \$api,
     'file=s'    => \my $filename,
     'o=s'       => \my $outfile,
     'onering!'  => \my $onering,
@@ -55,10 +60,11 @@ GetOptions (
     'offset|buffer=f' => \my $offset,
 );
 
-unless ( @ARGV ) {
+if ( !@ARGV || !$API{$api} ) {
     print "Usage:  getbound.pl [options] <relation> [<relation> ...]\n\n";
     print "relation - id or alias\n\n";
     print "Available options:\n";
+    print "     -api <api>      - api to use (@{\( sort keys %API )})\n";
     print "     -o <file>       - output filename (default: STDOUT)\n";
     print "     -proxy <host>   - use proxy\n";
     print "     -onering        - merge rings\n\n";
@@ -371,14 +377,14 @@ sub download_relation {
 
     logg "Downloading RelID=$rel_id";
 
-    my $data = http_get( "$api/relation/$rel_id/full", retry => 2 );
+    my $data = http_get( _get_url( relation => $rel_id, 'full' ), retry => 2 );
 
     if ( $data ) {
         $osm->load( $data );
     }
     else {
         logg "Unable to get full relation, trying by parts";
-        my $rel_data = http_get( "$api/relation/$rel_id", retry => 3 );
+        my $rel_data = http_get( _get_url( relation => $rel_id ), retry => 3 );
         exit 1  if !$rel_data;
 
         $osm->load( $rel_data );
@@ -391,12 +397,27 @@ sub download_relation {
 
         logg sprintf "%d ways to load", scalar @ways_to_load;
         for my $way_id ( @ways_to_load ) {
-            my $way_data = http_get( "$api/way/$way_id/full", retry => 3 );
+            my $way_data = http_get( _get_url( way => $way_id, 'full'), retry => 3 );
             exit 1  if !$way_data;
             $osm->load( $way_data );
         }
     }
 
+    return;
+}
+
+
+sub _get_url {
+    my ($obj, $id, $is_full) = @_;
+    my ($api_type, $api_url) = @{$API{$api}};
+
+    if ( $api_type ~~ 'osm' ) {
+        my $url = "$api_url/$obj/$id";
+        $url .= '/full'  if $is_full;
+        return $url;
+    }
+
+    croak "Unknown api type: $api_type";
     return;
 }
 
