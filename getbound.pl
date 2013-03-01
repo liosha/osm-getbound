@@ -19,7 +19,6 @@ use LWP::UserAgent;
 use Getopt::Long;
 use List::Util qw{ min max sum };
 use List::MoreUtils qw{ first_index none };
-use IO::Uncompress::Gunzip qw{ gunzip $GunzipError };
 use File::Slurp;
 
 use YAML::Any qw/ Dump LoadFile /;
@@ -30,14 +29,11 @@ use Math::Polygon::Tree qw/ :all /;
 
 ####    Settings
 
-our $api = $ENV{GETBOUND_API} || 'osm';
-our %API = (
-    osm     => [ osm => 'http://www.openstreetmap.org/api/0.6' ],
-    op_ru   => [ overpass => 'http://overpass.osm.rambler.ru/cgi' ],
+my %api_opt = (
+    api => $ENV{GETBOUND_API} || 'osm',
 );
 
 my $alias_config    = "$Bin/aliases.yml";
-my $http_timeout    = 300;
 
 my $save_mode = 'poly';
 my %save_sub = (
@@ -50,22 +46,22 @@ my %save_sub = (
 ####    Command-line
 
 GetOptions (
-    'api=s'     => sub { $api = $_[1]; $api =~ s/-/_/g; },
+    'api=s'     => \$api_opt{api},
     'file=s'    => \my $filename,
     'o=s'       => \my $outfile,
     'onering!'  => \my $onering,
     'noinner!'  => \my $noinner,
-    'proxy=s'   => \my $proxy,
+    'proxy=s'   => \$api_opt{proxy},
     'aliases=s' => \$alias_config,
     'om=s'      => \$save_mode,
     'offset|buffer=f' => \my $offset,
 );
 
-if ( !@ARGV || !$API{$api} ) {
+if ( !@ARGV ) {
     print "Usage:  getbound.pl [options] <relation> [<relation> ...]\n\n";
     print "relation - id or alias\n\n";
     print "Available options:\n";
-    print "     -api <api>      - api to use (@{[ sort keys %API ]})\n";
+    print "     -api <api>      - api to use (@{[ sort keys %OSM::ApiClient::API ]})\n";
     print "     -o <file>       - output filename (default: STDOUT)\n";
     print "     -proxy <host>   - use proxy\n";
     print "     -onering        - merge rings\n\n";
@@ -98,13 +94,19 @@ my %valid_role = (
 
 
 # getting and parsing
-my $osm = OSM->new();
+my $osm = OSM::Data->new();
 if ( $filename ) {
+    logg( "Reading file $filename" );
     my $xml = read_file $filename;
-    $osm->load( $xml );
+    $osm->load($xml);
 }
 else {
-    download_relation($_)  for @rel_ids;
+    my $api = OSM::ApiClient->new(%api_opt);
+    for my $id ( @rel_ids ) {
+        logg( "Downloading relation ID=$id" );
+        my $xml = $api->get_object( relation => $id, 'full' );
+        $osm->load($_)  for @{ ref $xml ? $xml : [$xml] };
+    }
 }
 
 
@@ -194,6 +196,7 @@ if ( !@contours || none { !$_->[1] } @contours ) {
 if ( defined $offset ) {
     require Math::Clipper;
 
+    logg( "Calculating buffer" );
     my $ofs_contours = Math::Clipper::offset( [ map { $_->[0] } @contours ], $offset, 1000/$offset );
 
     @contours =
@@ -337,80 +340,103 @@ sub logg {
 }
 
 
-##  HTTP functions
+
+# todo: move to standalone modules
+
+BEGIN {
+
+# OSM data downloader
+
+package OSM::ApiClient;
+
+use Carp;
+
+our $http_timeout = 300;
+our %API = (
+    osm     => [ osm => 'http://www.openstreetmap.org/api/0.6' ],
+    op_ru   => [ overpass => 'http://overpass.osm.rambler.ru/cgi' ],
+);
+
+
+sub new {
+    my ($class, %opt) = @_;
+
+    my $self = bless { opt => \%opt }, $class;
+
+    $self->{api} = $opt{api} || 'osm';
+    croak "Unknown api: $self->{api}"  if !$API{$self->{api}};
+
+    return $self;
+}
 
 sub _init_ua {
-    my $ua = LWP::UserAgent->new();
-    $ua->proxy( 'http', $proxy )    if $proxy;
+    my ($self) = @_;
+    return $self->{ua} if $self->{ua};
+
+    my $ua = $self->{ua} = LWP::UserAgent->new();
+    $ua->proxy( 'http', $self->{opt}->{proxy} )    if $self->{opt}->{proxy};
     $ua->default_header('Accept-Encoding' => 'gzip');
-    $ua->timeout( $http_timeout );
+    $ua->timeout( $self->{opt}->{http_timeout} // $http_timeout );
 
     return $ua;
 }
 
 
-sub http_get {
-    my ($url, %opt) = @_;
-    state $ua = _init_ua();
+sub _http_get {
+    my ($self, $url, %opt) = @_;
+    my $ua = $self->_init_ua();
     
-    logg ". $url";
+    # logg ". $url";
     my $req = HTTP::Request->new( GET => $url );
 
     my $res;
-    for my $attempt ( 1 .. $opt{retry} || 1 ) {
+    for my $attempt ( 0 .. $opt{retry} || 0 ) {
         # logg ". attempt $attempt";
         $res = $ua->request($req);
-        last if $res->is_success;
+        last if $res->is_success();
     }
 
-    if ( !$res->is_success ) {
-        logg 'Failed';
+    if ( !$res->is_success() ) {
+        # logg 'Failed';
         return;
     }
 
-    gunzip \($res->content) => \my $data;
-    return $data;
+    return $res->decoded_content();
 }
 
 
-sub download_relation {
-    my ($rel_id) = @_;
+sub get_object {
+    my ($self, $type, $id, $is_full) = @_;
 
-    logg "Downloading RelID=$rel_id";
+    my $url = $self->_get_object_url( $type => $id, $is_full );
+    my $xml = $self->_http_get( $url, retry => 1 );
+    return $xml  if $xml;
 
-    my $data = http_get( _get_url( relation => $rel_id, 'full' ), retry => 2 );
+    die "Failed to get $type ID=$id"  if !($type eq 'relation' && $is_full);
 
-    if ( $data ) {
-        $osm->load( $data );
-    }
-    else {
-        logg "Unable to get full relation, trying by parts";
-        my $rel_data = http_get( _get_url( relation => $rel_id ), retry => 3 );
-        exit 1  if !$rel_data;
+    # try to download big relation by parts
+    my $rel_xml = $self->get_object($type => $id, 0);
+    die "Failed to get $type ID=$id"  if !$rel_xml;
 
-        $osm->load( $rel_data );
-        my $relation = $osm->{relations}->{$rel_id};
-        my @ways_to_load =
-            grep { !exists $osm->{chains}->{$_} }
-            map { $_->{ref} }
-            grep { $_->{type} ~~ 'way' && $valid_role{$_->{role}} }
-            @{ $relation->{member} };
-
-        logg sprintf "%d ways to load", scalar @ways_to_load;
-        for my $way_id ( @ways_to_load ) {
-            my $way_data = http_get( _get_url( way => $way_id, 'full'), retry => 3 );
-            exit 1  if !$way_data;
-            $osm->load( $way_data );
-        }
+    my $osm = OSM::Data::_read_xml($rel_xml);
+    my $relation = $osm->{relations}->{$id};
+    
+    my @xmls = ($rel_xml);
+    for my $member ( @{ $relation->{member} } ) {
+        my $xml = $self->get_object(
+            $member->{type} => $member->{ref},
+            ($member->{type} eq 'relation' ? 0 : 'full')
+        );
+        push @xmls, $xml;
     }
 
-    return;
+    return \@xmls;
 }
 
 
-sub _get_url {
-    my ($obj, $id, $is_full) = @_;
-    my ($api_type, $api_url) = @{$API{$api}};
+sub _get_object_url {
+    my ($self, $obj, $id, $is_full) = @_;
+    my ($api_type, $api_url) = @{$API{$self->{api}}};
 
     if ( $api_type ~~ 'osm' ) {
         my $url = "$api_url/$obj/$id";
@@ -428,10 +454,12 @@ sub _get_url {
     return;
 }
 
+1;
 
-##  OSM parser
 
-package OSM;
+##  OSM data loader
+
+package OSM::Data;
 
 use Geo::Openstreetmap::Parser;
 
@@ -439,35 +467,52 @@ sub new {
     my ($class, %opt) = @_;
     my $self = bless {}, $class;
 
-    $self->{parser} = Geo::Openstreetmap::Parser->new(
-        node => sub {
-            my $attr = shift()->{attr};
-            $self->{nodes}->{ $attr->{id} } = [ $attr->{lon}, $attr->{lat} ];
-            return;
-        },
-        way => sub {
-            my $obj = shift();
-            my $id = $obj->{attr}->{id};
-            $self->{chains}->{$id} = $obj->{nd};
-            return;
-        },
-        relation => sub {
-            my $obj = shift();
-            my $id = $obj->{attr}->{id};
-            $self->{relations}->{$id} = $obj;
-            return;
-        },
-    );
-
     return $self;
 }
 
 sub load {
     my ($self, $xml) = @_;
-    open my $fh, '<', \$xml;
-    $self->{parser}->parse($fh);
-    close $fh;
+
+    my $new_data = _read_xml($xml);
+    for my $part ( qw/ nodes chains relations / ) {
+        next if !$new_data->{$part};
+        $self->{$part} = {( %{$self->{$part} || {}}, %{$new_data->{$part}} )};
+    }
+
     return;
 }
 
+sub _read_xml {
+    my ($xml) = @_;
 
+    my %osm;
+    my $parser = Geo::Openstreetmap::Parser->new(
+        node => sub {
+            my $attr = shift()->{attr};
+            $osm{nodes}->{ $attr->{id} } = [ $attr->{lon}, $attr->{lat} ];
+            return;
+        },
+        way => sub {
+            my $obj = shift();
+            my $id = $obj->{attr}->{id};
+            $osm{chains}->{$id} = $obj->{nd};
+            return;
+        },
+        relation => sub {
+            my $obj = shift();
+            my $id = $obj->{attr}->{id};
+            $osm{relations}->{$id} = $obj;
+            return;
+        },
+    );
+
+    open my $fh, '<', \$xml;
+    $parser->parse($fh);
+    close $fh;
+
+    return \%osm;
+}
+
+1;
+
+}
