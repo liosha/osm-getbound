@@ -12,10 +12,11 @@ use utf8;
 use autodie;
 
 use Carp;
+use Log::Any qw/$log/;
+use Log::Any::Adapter 0.11 ('Stderr');
 
 use FindBin qw{ $Bin };
 
-use LWP::UserAgent;
 use Getopt::Long;
 use List::Util qw{ min max sum };
 use List::MoreUtils qw{ first_index none };
@@ -96,14 +97,14 @@ my %valid_role = (
 # getting and parsing
 my $osm = OSM::Data->new();
 if ( $filename ) {
-    logg( "Reading file $filename" );
+    $log->notice( "Reading file $filename" );
     my $xml = read_file $filename;
     $osm->load($xml);
 }
 else {
     my $api = OSM::ApiClient->new(%api_opt);
     for my $id ( @rel_ids ) {
-        logg( "Downloading relation ID=$id" );
+        $log->notice("Downloading relation ID=$id");
         my $xml = $api->get_object( relation => $id, 'full' );
         $osm->load($_)  for @{ ref $xml ? $xml : [$xml] };
     }
@@ -111,7 +112,7 @@ else {
 
 
 # connecting rings: outers are counterclockwise!
-logg( "Creating polygons" );
+$log->notice( "Creating polygons" );
 
 # contours are arrays [ \@chain, $is_inner ]
 my @contours;
@@ -126,7 +127,7 @@ for my $rel_id ( @rel_ids ) {
     
         my $way_id = $member->{ref};
         if ( !exists $osm->{chains}->{$way_id} ) {
-            logg( "Incomplete data: way $way_id is missing" );
+            $log->warn( "Incomplete data: way $way_id is missing" );
             next;
         }
 
@@ -172,9 +173,9 @@ for my $rel_id ( @rel_ids ) {
                 $list_ref->[$pos] = [ @{$list_ref->[$pos]}, reverse @chain ];
                 next;
             }
-            logg( "Invalid data: ring is not closed" );
+            $log->error( "Invalid data: ring is not closed" );
 
-            logg( "Non-connecting chain:\n" . Dump( \@chain ) );
+            $log->debug( "Non-connecting chain:\n" . Dump( \@chain ) );
             exit 1;
         }
     }
@@ -182,7 +183,7 @@ for my $rel_id ( @rel_ids ) {
 
 
 if ( !@contours || none { !$_->[1] } @contours ) {
-    logg( "Invalid data: no outer rings" );
+    $log->error( "Invalid data: no outer rings" );
     exit 1;
 }
 
@@ -196,7 +197,7 @@ if ( !@contours || none { !$_->[1] } @contours ) {
 if ( defined $offset ) {
     require Math::Clipper;
 
-    logg( "Calculating buffer" );
+    $log->notice( "Calculating buffer" );
     my $ofs_contours = Math::Clipper::offset( [ map { $_->[0] } @contours ], $offset, 1000/$offset );
 
     @contours =
@@ -210,7 +211,7 @@ if ( defined $offset ) {
 
 ##  Merge rings
 if ( $onering ) {
-    logg( "Merging rings" );
+    $log->notice( "Merging rings" );
 
     my $first_item = shift @contours;
     my @ring = @{ $first_item->[0] };
@@ -269,11 +270,10 @@ if ( $onering ) {
 
 
 ##  Output
-logg( "Writing" );
-
+$log->notice( "Writing" );
 $save_sub{$save_mode}->();
 
-logg( "All ok" );
+$log->notice( "All Ok" );
 exit;
 
 
@@ -334,22 +334,20 @@ sub metric {
 }
 
 
-sub logg {
-    say STDERR @_;
-    return;
-}
 
 
+BEGIN {
 
 # todo: move to standalone modules
 
-BEGIN {
 
 # OSM data downloader
 
 package OSM::ApiClient;
 
 use Carp;
+use Log::Any qw($log);
+use LWP::UserAgent;
 
 our $http_timeout = 300;
 our %API = (
@@ -386,7 +384,7 @@ sub _http_get {
     my ($self, $url, %opt) = @_;
     my $ua = $self->_init_ua();
     
-    # logg ". $url";
+    $log->inform("GET $url");
     my $req = HTTP::Request->new( GET => $url );
 
     my $res;
@@ -397,7 +395,7 @@ sub _http_get {
     }
 
     if ( !$res->is_success() ) {
-        # logg 'Failed';
+        $log->warn('Download failed');
         return;
     }
 
@@ -415,6 +413,8 @@ sub get_object {
     die "Failed to get $type ID=$id"  if !($type eq 'relation' && $is_full);
 
     # try to download big relation by parts
+    $log->inform("Failed, trying by parts");
+
     my $rel_xml = $self->get_object($type => $id, 0);
     die "Failed to get $type ID=$id"  if !$rel_xml;
 
@@ -438,20 +438,21 @@ sub _get_object_url {
     my ($self, $obj, $id, $is_full) = @_;
     my ($api_type, $api_url) = @{$API{$self->{api}}};
 
+    my $url;
     if ( $api_type ~~ 'osm' ) {
-        my $url = "$api_url/$obj/$id";
+        $url = "$api_url/$obj/$id";
         $url .= '/full'  if $is_full;
-        return $url;
     }
-
-    if ( $api_type ~~ 'overpass' ) {
+    elsif ( $api_type ~~ 'overpass' ) {
         my $query = "data=$obj($id);";
         $query .= '(._;>);'  if $is_full;
-        return "$api_url/interpreter?${query}out meta;";
+        $url = "$api_url/interpreter?${query}out meta;";
+    }
+    else {
+        croak "Unknown api type: $api_type";
     }
 
-    croak "Unknown api type: $api_type";
-    return;
+    return $url;
 }
 
 1;
