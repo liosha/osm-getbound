@@ -1,32 +1,5 @@
 ---
 
-rus: 60189
-russia: 60189
-russian_federation: 60189
-
-#cloudmade
-afghanistan: 303427
-albania: 53292
-armenia: 364066
-azerbaijan: 364110
-cuba: 307833
-cyprus: 307787
-egypt: 1473947
-estonia: 79510
-georgia: 28699
-honduras: 287670
-israel: 214865
-jordan: 184818
-mongolia: 161033
-oman: 305138
-saudi_arabia: 307584
-syria: 184840
-tunisia: 192757
-turkey: 174737
-united_arab_emirates: 307763
-vietnam: 49915
-yemen: 305092
-
 #geofabrik
 bosnia-herzegovina: 214908
 bulgaria: 186382
@@ -43,10 +16,10 @@ romania: 90689
 serbia: 53294
 slovenia: 218657
 
-# gis-lab
+# gis-lab (deprecated, use iso codes instead)
+russia: 60189
 ukraine: 60199
 belarus: 59065
-belarus_preprocessed: 59065
 kazakhstan: 214665
 kyrgyzstan: 178009
 tajikistan: 214626
