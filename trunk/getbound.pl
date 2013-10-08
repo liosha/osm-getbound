@@ -441,7 +441,7 @@ sub _get_object_url {
     my $url;
     if ( $api_type ~~ 'osm' ) {
         $url = "$api_url/$obj/$id";
-        $url .= '/full'  if $is_full;
+        $url .= '/full'  if $is_full && $obj ne 'node';
     }
     elsif ( $api_type ~~ 'overpass' ) {
         my $query = "data=$obj($id);";
