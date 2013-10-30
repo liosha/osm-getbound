@@ -41,11 +41,11 @@ my %api_opt = (
 
 my $alias_config    = "$Bin/aliases.yml";
 
-my $save_mode = 'poly';
-my %save_sub = (
-    poly => \&_save_poly,
-    shp  => \&_save_shp,
+our %WRITER = (
+    poly => 'App::OsmGetbound::WriterPoly',
+    shp  => 'App::OsmGetbound::WriterShp',
 );
+my $writer_name;
 
 
 
@@ -59,9 +59,10 @@ GetOptions (
     'noinner!'  => \my $noinner,
     'proxy=s'   => \$api_opt{proxy},
     'aliases=s' => \$alias_config,
-    'om=s'      => \$save_mode,
+    'writer=s'  => \$writer_name,
+    'om=s'      => sub { my $m = $_[1]; my $w = $WRITER{$m}; croak "Unknown mode: $m" if !$w; $writer_name = $w; },
     'offset|buffer=f' => \my $offset,
-);
+) or die "Invalid options";
 
 if ( !@ARGV ) {
     print "Usage:  getbound.pl [options] <relation> [<relation> ...]\n\n";
@@ -73,6 +74,14 @@ if ( !@ARGV ) {
     print "     -onering        - merge rings\n\n";
     exit 1;
 }
+
+
+####    Writer
+
+$writer_name ||= $WRITER{poly};
+eval "require $writer_name; 1" or die $@;
+my $writer = $writer_name->new();
+
 
 
 ####    Aliases
@@ -276,57 +285,12 @@ if ( $onering ) {
 
 ##  Output
 $log->notice( "Writing" );
-$save_sub{$save_mode}->();
+
+my $name = 'Relation ' . join q{+}, @rel_ids;
+$writer->save($outfile, $name, \@contours);
 
 $log->notice( "All Ok" );
 exit;
-
-
-sub _save_poly {
-    my $out = $outfile && $outfile ne q{-}
-        ? do { open my $fh, '>', $outfile; $fh }
-        : *STDOUT;
-
-    my $rel = join q{+}, @rel_ids;
-    print {$out} "Relation $rel\n\n";
-
-    my $num = 1;
-
-    for my $item ( @contours ) {
-        my ($ring, $is_inner) = @$item;
-        
-        print {$out} ( $is_inner ? q{-} : q{}) . $num++ . "\n";
-        for my $point ( @$ring ) {
-            printf {$out} "   %-11s  %-11s\n", @$point;
-        }
-        print {$out} "END\n\n";
-    }
-
-    print {$out} "END\n";
-    close $out;
-
-    return;
-}
-
-
-sub _save_shp {
-    require Geo::Shapefile::Writer;
-
-    my $name = $outfile || join( q{-}, @ARGV );
-    my $shp = Geo::Shapefile::Writer->new( $name, 'POLYGON', qw/ NAME GRMN_TYPE / );
-
-    # !!! todo: rearrange contours
-    my @shp_contours =
-        map {[ reverse @{$_->[0]} ]}
-#        grep { !$_->[1] }  # skip inners?
-        @contours;
-
-    $shp->add_shape( \@shp_contours, { GRMN_TYPE => 'DATA_BOUNDS' } );
-    $shp->finalize();
-
-    return;
-}
-
 
 
 
