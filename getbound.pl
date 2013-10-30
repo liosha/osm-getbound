@@ -11,6 +11,8 @@ use warnings;
 use utf8;
 use autodie;
 
+use lib 'lib';
+
 use Carp;
 use Log::Any qw/$log/;
 use Log::Any::Adapter 0.11 ('Stderr');
@@ -26,6 +28,9 @@ use YAML::Any qw/ Dump LoadFile /;
 
 use Math::Polygon;
 use Math::Polygon::Tree qw/ :all /;
+
+use App::OsmGetbound::OsmData;
+use App::OsmGetbound::OsmApiClient;
 
 
 ####    Settings
@@ -62,7 +67,7 @@ if ( !@ARGV ) {
     print "Usage:  getbound.pl [options] <relation> [<relation> ...]\n\n";
     print "relation - id or alias\n\n";
     print "Available options:\n";
-    print "     -api <api>      - api to use (@{[ sort keys %OSM::ApiClient::API ]})\n";
+    print "     -api <api>      - api to use (@{[ sort keys %App::OsmGetbound::OsmApiClient::API ]})\n";
     print "     -o <file>       - output filename (default: STDOUT)\n";
     print "     -proxy <host>   - use proxy\n";
     print "     -onering        - merge rings\n\n";
@@ -95,14 +100,14 @@ my %valid_role = (
 
 
 # getting and parsing
-my $osm = OSM::Data->new();
+my $osm = App::OsmGetbound::OsmData->new();
 if ( $filename ) {
     $log->notice( "Reading file $filename" );
     my $xml = read_file $filename;
     $osm->load($xml);
 }
 else {
-    my $api = OSM::ApiClient->new(%api_opt);
+    my $api = App::OsmGetbound::OsmApiClient->new(%api_opt);
     for my $id ( @rel_ids ) {
         $log->notice("Downloading relation ID=$id");
         my $xml = $api->get_object( relation => $id, 'full' );
@@ -336,184 +341,3 @@ sub metric {
 
 
 
-BEGIN {
-
-# todo: move to standalone modules
-
-
-# OSM data downloader
-
-package OSM::ApiClient;
-
-use Carp;
-use Log::Any qw($log);
-use LWP::UserAgent;
-
-our $http_timeout = 300;
-our %API = (
-    osm     => [ osm => 'http://www.openstreetmap.org/api/0.6' ],
-    op_ru   => [ overpass => 'http://overpass.osm.rambler.ru/cgi' ],
-);
-
-
-sub new {
-    my ($class, %opt) = @_;
-
-    my $self = bless { opt => \%opt }, $class;
-
-    $self->{api} = $opt{api} || 'osm';
-    croak "Unknown api: $self->{api}"  if !$API{$self->{api}};
-
-    return $self;
-}
-
-sub _init_ua {
-    my ($self) = @_;
-    return $self->{ua} if $self->{ua};
-
-    my $ua = $self->{ua} = LWP::UserAgent->new();
-    $ua->proxy( 'http', $self->{opt}->{proxy} )    if $self->{opt}->{proxy};
-    $ua->default_header('Accept-Encoding' => 'gzip');
-    $ua->timeout( $self->{opt}->{http_timeout} // $http_timeout );
-
-    return $ua;
-}
-
-
-sub _http_get {
-    my ($self, $url, %opt) = @_;
-    my $ua = $self->_init_ua();
-    
-    $log->inform("GET $url");
-    my $req = HTTP::Request->new( GET => $url );
-
-    my $res;
-    for my $attempt ( 0 .. $opt{retry} || 0 ) {
-        # logg ". attempt $attempt";
-        $res = $ua->request($req);
-        last if $res->is_success();
-    }
-
-    if ( !$res->is_success() ) {
-        $log->warn('Download failed');
-        return;
-    }
-
-    return $res->decoded_content();
-}
-
-
-sub get_object {
-    my ($self, $type, $id, $is_full) = @_;
-
-    my $url = $self->_get_object_url( $type => $id, $is_full );
-    my $xml = $self->_http_get( $url, retry => 1 );
-    return $xml  if $xml;
-
-    die "Failed to get $type ID=$id"  if !($type eq 'relation' && $is_full);
-
-    # try to download big relation by parts
-    $log->inform("Failed, trying by parts");
-
-    my $rel_xml = $self->get_object($type => $id, 0);
-    die "Failed to get $type ID=$id"  if !$rel_xml;
-
-    my $osm = OSM::Data::_read_xml($rel_xml);
-    my $relation = $osm->{relations}->{$id};
-    
-    my @xmls = ($rel_xml);
-    for my $member ( @{ $relation->{member} } ) {
-        my $xml = $self->get_object(
-            $member->{type} => $member->{ref},
-            ($member->{type} eq 'relation' ? 0 : 'full')
-        );
-        push @xmls, $xml;
-    }
-
-    return \@xmls;
-}
-
-
-sub _get_object_url {
-    my ($self, $obj, $id, $is_full) = @_;
-    my ($api_type, $api_url) = @{$API{$self->{api}}};
-
-    my $url;
-    if ( $api_type ~~ 'osm' ) {
-        $url = "$api_url/$obj/$id";
-        $url .= '/full'  if $is_full && $obj ne 'node';
-    }
-    elsif ( $api_type ~~ 'overpass' ) {
-        my $query = "data=$obj($id);";
-        $query .= '(._;>);'  if $is_full;
-        $url = "$api_url/interpreter?${query}out meta;";
-    }
-    else {
-        croak "Unknown api type: $api_type";
-    }
-
-    return $url;
-}
-
-1;
-
-
-##  OSM data loader
-
-package OSM::Data;
-
-use Geo::Openstreetmap::Parser;
-
-sub new {
-    my ($class, %opt) = @_;
-    my $self = bless {}, $class;
-
-    return $self;
-}
-
-sub load {
-    my ($self, $xml) = @_;
-
-    my $new_data = _read_xml($xml);
-    for my $part ( qw/ nodes chains relations / ) {
-        next if !$new_data->{$part};
-        $self->{$part} = {( %{$self->{$part} || {}}, %{$new_data->{$part}} )};
-    }
-
-    return;
-}
-
-sub _read_xml {
-    my ($xml) = @_;
-
-    my %osm;
-    my $parser = Geo::Openstreetmap::Parser->new(
-        node => sub {
-            my $attr = shift()->{attr};
-            $osm{nodes}->{ $attr->{id} } = [ $attr->{lon}, $attr->{lat} ];
-            return;
-        },
-        way => sub {
-            my $obj = shift();
-            my $id = $obj->{attr}->{id};
-            $osm{chains}->{$id} = $obj->{nd};
-            return;
-        },
-        relation => sub {
-            my $obj = shift();
-            my $id = $obj->{attr}->{id};
-            $osm{relations}->{$id} = $obj;
-            return;
-        },
-    );
-
-    open my $fh, '<', \$xml;
-    $parser->parse($fh);
-    close $fh;
-
-    return \%osm;
-}
-
-1;
-
-}
