@@ -10,7 +10,9 @@ use warnings;
 use autodie;
 use utf8;
 
+use Carp;
 use Log::Any qw($log);
+
 use Geo::Shapefile::Writer;
 
 
