@@ -21,7 +21,7 @@ use FindBin qw{ $Bin };
 
 use Getopt::Long;
 use List::Util qw{ min max sum };
-use List::MoreUtils qw{ first_index none };
+use List::MoreUtils qw{ first_index none notall };
 use File::Slurp;
 
 use YAML::Any qw/ Dump LoadFile /;
@@ -31,6 +31,7 @@ use Math::Polygon::Tree qw/ :all /;
 
 use App::OsmGetbound::OsmData;
 use App::OsmGetbound::OsmApiClient;
+use App::OsmGetbound::RelAlias;
 
 
 ####    Settings
@@ -39,18 +40,16 @@ my %api_opt = (
     api => $ENV{GETBOUND_API} || 'osm',
 );
 
-my $alias_config    = "$Bin/aliases.yml";
-
 our %WRITER = (
     poly => 'App::OsmGetbound::WriterPoly',
     shp  => 'App::OsmGetbound::WriterShp',
 );
-my $writer_name;
 
 
 
 ####    Command-line
 
+my $writer_name;
 GetOptions (
     'api=s'     => \$api_opt{api},
     'file=s'    => \my $filename,
@@ -58,7 +57,7 @@ GetOptions (
     'onering!'  => \my $onering,
     'noinner!'  => \my $noinner,
     'proxy=s'   => \$api_opt{proxy},
-    'aliases=s' => \$alias_config,
+    'aliases=s' => \my $alias_config,
     'writer=s'  => \$writer_name,
     'om=s'      => sub { my $m = $_[1]; my $w = $WRITER{$m}; croak "Unknown mode: $m" if !$w; $writer_name = $w; },
     'offset|buffer=f' => \my $offset,
@@ -83,20 +82,14 @@ eval "require $writer_name; 1" or die $@;
 my $writer = $writer_name->new();
 
 
-
 ####    Aliases
-
-my ($rename) = eval{ LoadFile $alias_config };
-unless ( $rename ) {
-    carp "Unable to load aliases from $alias_config: $@" if $alias_config;
-    $rename = {};
-}
-
+my $alias = App::OsmGetbound::RelAlias->new($alias_config);
 
 
 ####    Process
 
-my @rel_ids = map { $rename->{$_} // $_ } @ARGV;
+my @rel_ids = map { $alias->get_id($_) } @ARGV;
+croak "Unknown alias"  if notall {defined} @rel_ids;
 
 my %valid_role = (
     ''          => 'outer',
