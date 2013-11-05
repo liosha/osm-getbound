@@ -24,7 +24,7 @@ use List::Util qw{ min max sum };
 use List::MoreUtils qw{ first_index none notall };
 use File::Slurp;
 
-use YAML::Any qw/ Dump LoadFile /;
+use YAML;
 
 use Math::Polygon;
 use Math::Polygon::Tree qw/ :all /;
