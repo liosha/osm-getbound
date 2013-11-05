@@ -88,7 +88,7 @@ my $alias = App::OsmGetbound::RelAlias->new($alias_config);
 
 ####    Process
 
-my @rel_ids = map { $alias->get_id($_) } @ARGV;
+my @rel_ids = map { my $al = $alias->get_id($_); ref $al ? @$al : ($al) } @ARGV;
 croak "Unknown alias"  if notall {defined} @rel_ids;
 
 my %valid_role = (
