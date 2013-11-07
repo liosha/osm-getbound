@@ -27,7 +27,7 @@ use File::Slurp;
 use YAML;
 
 use Math::Polygon;
-use Math::Polygon::Tree qw/ :all /;
+use Math::Polygon::Tree 0.061 qw/ :all /;
 
 use App::OsmGetbound::OsmData;
 use App::OsmGetbound::OsmApiClient;
