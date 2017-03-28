@@ -151,7 +151,7 @@ for my $rel_id ( @rel_ids ) {
                 state $desired_order = { outer => 0, inner => 1 };
                 push @contours, [
                     $order == $desired_order->{$type} ? \@contour : [reverse @contour],
-                    $type ~~ 'inner',
+                    $type eq 'inner',
                 ];
                 next;
             }

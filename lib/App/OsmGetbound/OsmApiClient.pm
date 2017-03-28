@@ -148,7 +148,9 @@ sub _http_get {
         return;
     }
 
-    return $res->decoded_content();
+    my $content = $res->decoded_content();
+    utf8::encode($content);
+    return $content;
 }
 
 
@@ -160,11 +162,11 @@ sub _get_object_url {
     my ($api_type, $api_url) = @{$API{$self->{api}}};
 
     my $url;
-    if ( $api_type ~~ 'osm' ) {
+    if ( $api_type eq 'osm' ) {
         $url = "$api_url/$obj/$id";
         $url .= '/full'  if $is_full && $obj ne 'node';
     }
-    elsif ( $api_type ~~ 'overpass' ) {
+    elsif ( $api_type eq 'overpass' ) {
         my $query = "data=$obj($id);";
         $query .= '(._;>);'  if $is_full;
         $url = "$api_url/interpreter?${query}out meta;";
