@@ -11,7 +11,8 @@ use warnings;
 use utf8;
 use autodie;
 
-use lib 'lib';
+use FindBin '$Bin';
+use lib "$Bin/lib";
 
 use Carp;
 use Log::Any qw/$log/;
